@@ -7,13 +7,15 @@ using DelimitedFiles
 include("markov_chain.jl")
 
 function epex_data()
-    data = readdlm("weatherdata.csv", ','; header=true)[1]
-    epex_price = data[:, end]
-    epex_ln = zeros(365)
-    for i in 1:365
-        k = (i-1)*96 + 1
-        l = i*96
-        epex_ln[i] = log(mean(epex_price[k:min(l, size(data, 1))]))
+    epex_price = readdlm("meanreversion.txt")
+    Δ = 24
+    ndays = 365
+    @assert length(epex_price) == Δ * ndays
+    epex_ln = zeros(ndays)
+    for i in 1:ndays
+        k = (i-1)*Δ + 1
+        l = i*Δ
+        epex_ln[i] = log(mean(epex_price[k:l]))
     end
     return epex_ln
 end
@@ -25,13 +27,13 @@ function markov_sddp(
     iteration_limit = 25,
     linearize=true,
     rho=0.2,
+    C_max=5.0,
+    Q=0.0,
+    sc=1e5,
 )
     T = 364
-    Q = 0 # initial amount of money invested
-    C_max = 5 # capacity of the storage
     r = 0.0001
     l = 0.05
-    sc = 1e5 #renormalization coefficient
 
     # create the Markovian graph
     ind0, x0d = project(markov_model, x0)
@@ -150,7 +152,6 @@ function _next!(x, pb::SDDP.Node, price)
 end
 
 function _out_of_sample(model, train_proc::StationaryMarkovChain, test_proc::AR1)
-    sc = 1e5
     T = 364 # number of timesteps
     ε = Normal(0.0, test_proc.sigma)
     moy_ln = epex_data()
@@ -188,61 +189,54 @@ function convert_gain(val)
 end
 
 # Figure 1: SDDP's Convergence against size of
-function compute_figure1(; total_it=50)
-    phi, sigma = 0.54, 0.39
+function compute_figure1(config)
     # Stochastic model
-    price_process = AR1(0.0, phi, sigma)
-
+    price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
     moy_ln = epex_data()
 
     x0 = 0.0
-    for Nd in [2, 5, 10, 20]
+    for Nd in config.Nd
         @info "Nd=$(Nd)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=total_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=config.sddp.sddp_it)
         lb = [log.bound for log in model.most_recent_training_results.log]
         writedlm(joinpath("results", "lower_bound_nd$(Nd).txt"), lb)
     end
 end
 
-function compute_figure2(; total_it=50, nsimus=1000)
-    phi, sigma = 0.54, 0.39
+function compute_figure2(config)
     x0 = 0.0
     # Stochastic model
-    price_process = AR1(0.0, phi, sigma)
+    price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
     moy_ln = epex_data()
 
-    for Nd in [2, 5, 10, 20]
+    for Nd in config.Nd
         @info "Nd=$(Nd)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=total_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=config.sddp.sddp_it)
 
-        in_utility = simulate(model, nsimus)
-        out_utility = simulate(model, markov_model, price_process, nsimus)
+        in_utility = simulate(model, config.sddp.nsimus)
+        out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
 
         writedlm(joinpath("results", "simulation_$(Nd)_insamp.txt"), in_utility)
         writedlm(joinpath("results", "simulation_$(Nd)_outsamp.txt"), out_utility)
     end
 end
 
-function compute_figure3(; total_it=50, nsimus=1000)
-    phi = 0.54
+function compute_figure3(config)
     x0 = 0.0
 
-    sigmas = 0.39:0.06:0.8
-    Nds = [1, 2, 5, 10, 20]
-
-    results = zeros(length(sigmas) * length(Nds), 4)
+    results = zeros(length(config.sigmas) * length(config.Nds), 4)
 
     k = 0
-    for sigma in sigmas, Nd in Nds
+    for sigma in config.sigmas, Nd in config.Nds
         @info "sigma=$(sigma) Nd=$(Nd)"
         k += 1
-        price_process = AR1(0.0, phi, sigma)
+        price_process = AR1(config.stats.mu, config.stats.phi, sigma)
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=total_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=config.sddp.sddp_it)
 
-        out_utility = simulate(model, markov_model, price_process, nsimus)
+        out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
 
         results[k, 1] = sigma
         results[k, 2] = Nd

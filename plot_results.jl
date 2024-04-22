@@ -4,8 +4,10 @@ using Statistics
 using Plots
 using StatsPlots
 
-function plot_figure1()
-    nbins = [2, 5, 10, 20]
+include("config.jl")
+
+function plot_figure1(config)
+    nbins = config.Nd
     files = ["results/lower_bound_nd$(n).txt" for n in nbins]
     labels = ["#nodes=$(n)" for n in nbins]
     lbs = readdlm.(files)
@@ -21,13 +23,13 @@ function plot_figure1()
     return fig
 end
 
-function plot_figure2()
-    nbins = [2, 5, 10, 20]
+function plot_figure2(config)
+    nbins = config.Nd
     insamp_files = ["results/simulation_$(n)_insamp.txt" for n in nbins]
     outsamp_files = ["results/simulation_$(n)_outsamp.txt" for n in nbins]
     lb_files = ["results/lower_bound_nd$(n).txt" for n in nbins]
 
-    colors = palette(:berlin10, 5)
+    colors = palette(:darktest, 3)
     fig = plot(layout=(length(nbins), 1), link=:both, legend=nothing, size=(500, 500), bottom_margin=0*Plots.mm, yaxis=nothing,
                guidefontsize=7,
                legendfontsize=6,
@@ -59,8 +61,8 @@ function plot_figure2()
     return fig
 end
 
-function plot_figure3()
-    nbins = [1, 2, 5, 10, 20, 50]
+function plot_figure3(config)
+    nbins = config.Nd
     results = readdlm("results/sensitivity_std.txt")
 
     res = results[:, 2] .== 2.0
@@ -87,6 +89,6 @@ function plot_figure3()
     return fig
 end
 
-f1 = plot_figure1()
-f2 = plot_figure2()
-f3 = plot_figure3()
+f1 = plot_figure1(config)
+f2 = plot_figure2(config)
+f3 = plot_figure3(config)
