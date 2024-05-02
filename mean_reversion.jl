@@ -1,6 +1,9 @@
 
 using DelimitedFiles
 using Statistics
+using Plots
+
+DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 function detrend(input)
     @assert length(input) == 8760
@@ -65,7 +68,44 @@ function detrend(input)
     return (mean=mean_reversion, week=weekly_price, day=avg_daily_price, hour=hourly_price, residual=detrended)
 end
 
+function plot_mean_reversion(input, results)
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    pos = 15*24:30*24:365*24
+
+    fig = plot(layout=(2, 1), link=:both, xticks=(pos, months), ylims=(2, 5), xlims=(1, 365*24))
+    plot!(input, lw=0.5, label="", subplot=1)
+    plot!(results.mean, label="", lw=0.5, subplot=2)
+
+    title!("Original", subplot=1)
+    title!("Mean reversion", subplot=2)
+    for s in [1,2]
+        vline!(24 .* cumsum([0; DAYS_PER_MONTH]), color="black", label="", subplot=s)
+    end
+    ylabel!("Price [€/MWh]")
+    savefig("time-series.pdf")
+    return fig
+end
+
+function plot_mean_reversion_decomposition(results)
+    fig = plot(layout=(3, 1), link=:y)
+    ylabel!("Price")
+    bar!(results.week, subplot=1, label="", xlims=(0.5, 52.5))
+    xlabel!("Week", subplot=1)
+    title!("Annual variation", subplot=1)
+    plot!(subplot=2, xticks=(1:7, ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]))
+    bar!(results.day[[5, 6, 7, 1, 2, 3, 4]], subplot=2, label="", xlims=(0.5, 7.5))
+    xlabel!("Day", subplot=2)
+    title!("Weekly variation", subplot=2)
+    bar!(results.hour, subplot=3, label="", xlims=(0.5, 24.5))
+    xlabel!("Hour", subplot=3)
+    title!("Daily variation", subplot=3)
+    savefig("mean-reversion-decomposition.pdf")
+    return fig
+end
+
 epex_price = readdlm("epexprice.txt")
-results = detrend(epex_price)
-writedlm("meanreversion.txt", results.mean)
+results = detrend(log.(epex_price))
+f1 = plot_stats(epex_price, results)
+f2 = plot_mean_reversion_decomposition(results)
+writedlm("logmeanreversion.txt", results.mean)
 

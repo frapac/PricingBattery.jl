@@ -7,7 +7,7 @@ using DelimitedFiles
 include("markov_chain.jl")
 
 function epex_data()
-    epex_price = readdlm("meanreversion.txt")
+    epex_price = readdlm("logmeanreversion.txt")
     Δ = 24
     ndays = 365
     @assert length(epex_price) == Δ * ndays
@@ -15,7 +15,7 @@ function epex_data()
     for i in 1:ndays
         k = (i-1)*Δ + 1
         l = i*Δ
-        epex_ln[i] = log(mean(epex_price[k:l]))
+        epex_ln[i] = mean(epex_price[k:l])
     end
     return epex_ln
 end
@@ -23,15 +23,16 @@ end
 function markov_sddp(
     markov_model,
     x0,
+    horizon,
     average_price;
     iteration_limit = 25,
     linearize=true,
     rho=0.2,
     C_max=5.0,
+    alpha=0.2,
     Q=0.0,
     sc=1e5,
 )
-    T = 364
     r = 0.0001
     l = 0.05
 
@@ -40,7 +41,7 @@ function markov_sddp(
     graph = SDDP.Graph((0, ind0))
     # Add nodes
     nb_nodes = length(markov_model.x)
-    for t in 1:T
+    for t in 1:horizon
         for k in 1:nb_nodes
             SDDP.add_node(graph, (t, k))
         end
@@ -52,7 +53,7 @@ function markov_sddp(
         pij = markov_model.proba[ind0, i]
         SDDP.add_edge(graph, (0, ind0) => (1, i), pij)
     end
-    for t in 2:T
+    for t in 2:horizon
         for i in 1:nb_nodes, j in 1:nb_nodes
             xi, xj = markov_model.x[i], markov_model.x[j]
             pij = markov_model.proba[i, j]
@@ -71,27 +72,25 @@ function markov_sddp(
         price = 1.0
         # State
         @variable(sp, 0 <= C <= C_max, SDDP.State, initial_value = 0.0)
-        @variable(sp, 0 <= Z_plus, SDDP.State, initial_value = 0.0)
-        @variable(sp, 0 <= Z_moins, SDDP.State, initial_value = Q/sc)
+        @variable(sp, Z, SDDP.State, initial_value = 0.0)
         # Control
-        @variable(sp, 0 <= U_plus <=  C_max)
-        @variable(sp, 0 <= U_moins <=   C_max)
-        if t == T
+        @variable(sp, -alpha * C_max <= U <= alpha * C_max)
+        if t == horizon
             @variable(sp, 0 <= utility)
         end
 
         # Dynamics
-        @constraint(sp, gain, Z_plus.out - Z_moins.out == (1+r)*Z_plus.in - (1+r)*Z_moins.in  - (price)*U_plus/sc + (price)*U_moins/sc)
-        @constraint(sp, charge, C.out == (1 - l)*C.in + U_plus - U_moins)
+        @constraint(sp, gain, Z.out == (1+r)*Z.in - price*U/sc)
+        @constraint(sp, charge, C.out == (1 - l)*C.in + U)
 
-        if t == T
+        if t == horizon
             if linearize
                 zmin, zmax = 0, 10000
                 vmin, vmax = (zmin, zmax) .* (rho / sc)
                 for v in range(vmin, vmax, 5000)
                     exp_v = exp(-v)
                     zk = v / rho
-                    @constraint(sp, utility >= exp_v / rho - exp_v *(Z_plus.out - Z_moins.out - zk))
+                    @constraint(sp, utility >= exp_v / rho - exp_v *(Z.out - zk))
                 end
                 @stageobjective(sp, utility) # maximize the final amount of money of the investor
             else
@@ -101,8 +100,7 @@ function markov_sddp(
         end
 
         SDDP.parameterize(sp, [exp(average_price[t+1] + markov_model.x[k])]) do ω
-            JuMP.set_normalized_coefficient(gain, U_plus,  ω / sc)
-            JuMP.set_normalized_coefficient(gain, U_moins, -ω / sc)
+            JuMP.set_normalized_coefficient(gain, U,  ω / sc)
         end
 
     end
@@ -123,11 +121,11 @@ end
 
 function simulate(model, nsimu)
     sc = 10e4 #renormalization coefficient
-    sim = SDDP.simulate(model, nsimu, [:Z_plus, :Z_moins])
+    sim = SDDP.simulate(model, nsimu, [:Z])
     utilities = Float64[]
     for s in sim
-        z_plus, z_moins = s[end][:Z_plus], s[end][:Z_moins]
-        push!(utilities, _utility(z_plus.out - z_moins.out))
+        z = s[end][:Z]
+        push!(utilities, _utility(z.out))
     end
     return utilities
 end
@@ -136,8 +134,8 @@ function _next!(x, pb::SDDP.Node, price)
     m = pb.subproblem
     sc = 1e5
     # Set current price in JuMP model
-    JuMP.set_normalized_coefficient(m[:gain], m[:U_plus],  price / sc)
-    JuMP.set_normalized_coefficient(m[:gain], m[:U_moins], -price / sc)
+    JuMP.set_normalized_coefficient(m[:gain], m[:U],  price / sc)
+    JuMP.set_normalized_coefficient(m[:gain], m[:U], -price / sc)
 
     for (k, state) in enumerate(keys(pb.states))
         JuMP.fix(pb.states[state].in, x[k])
@@ -193,12 +191,13 @@ function compute_figure1(config)
     # Stochastic model
     price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
     moy_ln = epex_data()
+    horizon = config.model.horizon
 
     x0 = 0.0
     for Nd in config.Nd
         @info "Nd=$(Nd)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=config.sddp.sddp_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it)
         lb = [log.bound for log in model.most_recent_training_results.log]
         writedlm(joinpath("results", "lower_bound_nd$(Nd).txt"), lb)
     end
@@ -209,11 +208,12 @@ function compute_figure2(config)
     # Stochastic model
     price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
     moy_ln = epex_data()
+    horizon = config.model.horizon
 
     for Nd in config.Nd
         @info "Nd=$(Nd)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=config.sddp.sddp_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it)
 
         in_utility = simulate(model, config.sddp.nsimus)
         out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
@@ -225,16 +225,17 @@ end
 
 function compute_figure3(config)
     x0 = 0.0
-
-    results = zeros(length(config.sigmas) * length(config.Nds), 4)
+    horizon = config.model.horizon
+    moy_ln = epex_data()
+    results = zeros(length(config.sigmas) * length(config.Nd), 4)
 
     k = 0
-    for sigma in config.sigmas, Nd in config.Nds
+    for sigma in config.sigmas, Nd in config.Nd
         @info "sigma=$(sigma) Nd=$(Nd)"
         k += 1
         price_process = AR1(config.stats.mu, config.stats.phi, sigma)
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, moy_ln; iteration_limit=config.sddp.sddp_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it)
 
         out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
 

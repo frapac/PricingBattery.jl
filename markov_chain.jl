@@ -45,7 +45,6 @@ function _sample(probs)
             break
         end
     end
-    println(probs)
     return j
 end
 
