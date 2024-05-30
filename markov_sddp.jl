@@ -31,7 +31,6 @@ function markov_sddp(
     C_max=5.0,
     alpha=0.2,
     Q=0.0,
-    sc=1e5,
 )
     r = 0.0001
     l = 0.05
@@ -65,7 +64,7 @@ function markov_sddp(
     model = SDDP.PolicyGraph(
         graph,
         sense = :Min,
-        lower_bound = -1e6,
+        lower_bound = -1e4,
         optimizer = linearize ? HiGHS.Optimizer : Ipopt.Optimizer,
     ) do sp, node
         t, k = node
@@ -80,16 +79,16 @@ function markov_sddp(
         end
 
         # Dynamics
-        @constraint(sp, gain, Z.out == (1+r)*Z.in - price*U/sc)
+        @constraint(sp, gain, Z.out == (1+r)*Z.in - price*U)
         @constraint(sp, charge, C.out == (1 - l)*C.in + U)
 
         if t == horizon
             if linearize
                 zmin, zmax = 0, 10000
-                vmin, vmax = (zmin, zmax) .* (rho / sc)
-                for v in range(vmin, vmax, 5000)
-                    exp_v = exp(-v)
-                    zk = v / rho
+                # vmin, vmax = (zmin, zmax) .* rho
+                for v in range(zmin, zmax, 5000)
+                    exp_v = exp(-rho * v)
+                    zk = v
                     @constraint(sp, utility >= exp_v / rho - exp_v *(Z.out - zk))
                 end
                 @stageobjective(sp, utility) # maximize the final amount of money of the investor
@@ -100,7 +99,7 @@ function markov_sddp(
         end
 
         SDDP.parameterize(sp, [exp(average_price[t+1] + markov_model.x[k])]) do ω
-            JuMP.set_normalized_coefficient(gain, U,  ω / sc)
+            JuMP.set_normalized_coefficient(gain, U,  ω)
         end
 
     end
@@ -120,22 +119,19 @@ function _utility(z)
 end
 
 function simulate(model, nsimu)
-    sc = 10e4 #renormalization coefficient
     sim = SDDP.simulate(model, nsimu, [:Z])
-    utilities = Float64[]
+    final_wealth = Float64[]
     for s in sim
         z = s[end][:Z]
-        push!(utilities, _utility(z.out))
+        push!(final_wealth, z.out)
     end
-    return utilities
+    return final_wealth
 end
 
 function _next!(x, pb::SDDP.Node, price)
     m = pb.subproblem
-    sc = 1e5
     # Set current price in JuMP model
-    JuMP.set_normalized_coefficient(m[:gain], m[:U],  price / sc)
-    JuMP.set_normalized_coefficient(m[:gain], m[:U], -price / sc)
+    JuMP.set_normalized_coefficient(m[:gain], m[:U],  price)
 
     for (k, state) in enumerate(keys(pb.states))
         JuMP.fix(pb.states[state].in, x[k])
@@ -169,8 +165,7 @@ function _out_of_sample(model, train_proc::StationaryMarkovChain, test_proc::AR1
         pb = model.nodes[(t, k)]
         _next!(x0, pb, price)
     end
-    z_moins, z_plus = x0[1], x0[2]
-    return _utility(z_plus - z_moins)
+    return x0[2]
 end
 
 function simulate(model, train_proc, test_proc, nsimu)
@@ -179,11 +174,6 @@ function simulate(model, train_proc, test_proc, nsimu)
         push!(final_gain, _out_of_sample(model, train_proc, test_proc))
     end
     return final_gain
-end
-
-function convert_gain(val)
-    sc, rho, r, tf = 1e5, 0.2, 1e-4, 364
-    return -sc / rho * log(rho*val) / (1 + r)^tf
 end
 
 # Figure 1: SDDP's Convergence against size of
@@ -195,9 +185,9 @@ function compute_figure1(config)
 
     x0 = 0.0
     for Nd in config.Nd
-        @info "Nd=$(Nd)"
+        @info "Nd=$(Nd) rho=$(config.rho)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it, rho=config.rho)
         lb = [log.bound for log in model.most_recent_training_results.log]
         writedlm(joinpath("results", "lower_bound_nd$(Nd).txt"), lb)
     end
@@ -211,9 +201,11 @@ function compute_figure2(config)
     horizon = config.model.horizon
 
     for Nd in config.Nd
-        @info "Nd=$(Nd)"
+        @info "Nd=$(Nd) rho=$(config.rho)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it, rho=config.rho)
+        lb = [log.bound for log in model.most_recent_training_results.log]
+        writedlm(joinpath("results", "lower_bound_nd$(Nd).txt"), lb)
 
         in_utility = simulate(model, config.sddp.nsimus)
         out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
