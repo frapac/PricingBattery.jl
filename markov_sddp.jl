@@ -71,7 +71,7 @@ function markov_sddp(
         price = 1.0
         # State
         @variable(sp, 0 <= C <= C_max, SDDP.State, initial_value = 0.0)
-        @variable(sp, Z, SDDP.State, initial_value = 0.0)
+        @variable(sp, Z, SDDP.State, initial_value = -Q)
         # Control
         @variable(sp, -alpha * C_max <= U <= alpha * C_max)
         if t == horizon
@@ -165,7 +165,7 @@ function _out_of_sample(model, train_proc::StationaryMarkovChain, test_proc::AR1
         pb = model.nodes[(t, k)]
         _next!(x0, pb, price)
     end
-    return x0[2]
+    return x0[1]
 end
 
 function simulate(model, train_proc, test_proc, nsimu)
@@ -177,14 +177,14 @@ function simulate(model, train_proc, test_proc, nsimu)
 end
 
 # Figure 1: SDDP's Convergence against size of
-function compute_figure1(config)
+function compute_figure1(config, Nds)
     # Stochastic model
     price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
     moy_ln = epex_data()
     horizon = config.model.horizon
 
     x0 = 0.0
-    for Nd in config.Nd
+    for Nd in Nds
         @info "Nd=$(Nd) rho=$(config.rho)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
         model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it, rho=config.rho)
@@ -193,14 +193,14 @@ function compute_figure1(config)
     end
 end
 
-function compute_figure2(config)
+function compute_figure2(config, Nds)
     x0 = 0.0
     # Stochastic model
     price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
     moy_ln = epex_data()
     horizon = config.model.horizon
 
-    for Nd in config.Nd
+    for Nd in Nds
         @info "Nd=$(Nd) rho=$(config.rho)"
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
         model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it, rho=config.rho)
@@ -215,19 +215,20 @@ function compute_figure2(config)
     end
 end
 
-function compute_figure3(config)
+# sensitivity w.r.t. volatility
+function compute_figure3(config, Nd, sigmas)
     x0 = 0.0
     horizon = config.model.horizon
     moy_ln = epex_data()
-    results = zeros(length(config.sigmas) * length(config.Nd), 4)
+    results = zeros(length(sigmas), 4)
 
     k = 0
-    for sigma in config.sigmas, Nd in config.Nd
+    for sigma in sigmas
         @info "sigma=$(sigma) Nd=$(Nd)"
         k += 1
         price_process = AR1(config.stats.mu, config.stats.phi, sigma)
         markov_model = fit_markov(price_process, TauchenHussey(Nd))
-        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it)
+        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it, rho=config.rho)
 
         out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
 
@@ -237,6 +238,68 @@ function compute_figure3(config)
         results[k, 4] = mean(out_utility)
     end
 
-    writedlm(joinpath("results", "sensitivity_std_det.txt"), results)
+    writedlm(joinpath("results", "sensitivity_sigmas.txt"), results)
+end
+
+# sensitivity w.r.t. risk aversion
+function compute_figure4(config, Nd, rhos)
+    x0 = 0.0
+    horizon = config.model.horizon
+    moy_ln = epex_data()
+    results = zeros(length(rhos), 4)
+
+    price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
+    markov_model = fit_markov(price_process, TauchenHussey(Nd))
+
+    k = 0
+    for rho in rhos
+        @info "rho=$(rho) Nd=$(Nd)"
+        k += 1
+        model, price_lb, graph = markov_sddp(markov_model, x0, horizon, moy_ln; iteration_limit=config.sddp.sddp_it, rho=rho)
+
+        out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
+
+        results[k, 1] = rho
+        results[k, 2] = Nd
+        results[k, 3] = SDDP.calculate_bound(model)
+        results[k, 4] = mean(out_utility)
+    end
+
+    writedlm(joinpath("results", "sensitivity_rhos.txt"), results)
+end
+
+# sensitivity w.r.t. charge/discharge rate
+function compute_figure5(config, Nd, alphas)
+    x0 = 0.0
+    horizon = config.model.horizon
+    moy_ln = epex_data()
+    results = zeros(length(rhos), 4)
+
+    price_process = AR1(config.stats.mu, config.stats.phi, config.stats.sigma)
+    markov_model = fit_markov(price_process, TauchenHussey(Nd))
+
+    k = 0
+    for alpha in alphas
+        @info "rho=$(rho) Nd=$(Nd)"
+        k += 1
+        model, price_lb, graph = markov_sddp(
+            markov_model,
+            x0,
+            horizon,
+            moy_ln;
+            iteration_limit=config.sddp.sddp_it,
+            rho=config.rho,
+            alpha=alpha,
+        )
+
+        out_utility = simulate(model, markov_model, price_process, config.sddp.nsimus)
+
+        results[k, 1] = alpha
+        results[k, 2] = Nd
+        results[k, 3] = SDDP.calculate_bound(model)
+        results[k, 4] = mean(out_utility)
+    end
+
+    writedlm(joinpath("results", "sensitivity_charging_rate.txt"), results)
 end
 

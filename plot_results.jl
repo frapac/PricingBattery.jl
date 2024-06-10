@@ -27,6 +27,8 @@ end
 
 function plot_figure2(config)
     nbins = config.Nd
+    rho = config.rho
+    utility(x) = inv(rho) * exp(- rho * x)
     insamp_files = [joinpath(RESULTS_DIR, "simulation_$(n)_insamp.txt") for n in nbins]
     outsamp_files = [joinpath(RESULTS_DIR, "simulation_$(n)_outsamp.txt") for n in nbins]
     lb_files = [joinpath(RESULTS_DIR, "lower_bound_nd$(n).txt") for n in nbins]
@@ -36,11 +38,12 @@ function plot_figure2(config)
                guidefontsize=7,
                legendfontsize=6,
     )
+
     k = 0
     for (f1, f2, f3, nb) in zip(insamp_files, outsamp_files, lb_files, nbins)
         k += 1
-        insamp_gain = readdlm(f1)
-        outsamp_gain = readdlm(f2)
+        insamp_gain = utility.(readdlm(f1))
+        outsamp_gain = utility.(readdlm(f2))
         lb = readdlm(f3)
 
         leg = (k == 1)
@@ -69,9 +72,11 @@ function plot_figure2bis(config)
     outsamp_files = [joinpath(RESULTS_DIR, "simulation_$(n)_outsamp.txt") for n in nbins]
     lb_files = [joinpath(RESULTS_DIR, "lower_bound_nd$(n).txt") for n in nbins]
 
+    rho = config.rho
     nexp = length(nbins)
     results = zeros(nexp, 3)
 
+    utility(x) = inv(rho) * exp(- rho * x)
     k = 0
     for (f1, f2, f3, nb) in zip(insamp_files, outsamp_files, lb_files, nbins)
         k += 1
@@ -79,8 +84,8 @@ function plot_figure2bis(config)
         outsamp_gain = readdlm(f2)
         lb = readdlm(f3)
         results[k, 1] = lb[end]
-        results[k, 2] = mean(insamp_gain)
-        results[k, 3] = mean(outsamp_gain)
+        results[k, 2] = mean(utility.(insamp_gain))
+        results[k, 3] = mean(utility.(outsamp_gain))
     end
 
     fig = plot(xscale=:log10, xticks=(nbins, nbins))
@@ -123,5 +128,5 @@ function plot_figure3(config)
 end
 
 f1 = plot_figure1(config)
-f2 = plot_figure2bis(config)
-f3 = plot_figure3(config)
+# f2 = plot_figure2(config)
+# f3 = plot_figure3(config)

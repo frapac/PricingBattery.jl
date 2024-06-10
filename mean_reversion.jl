@@ -72,7 +72,7 @@ function plot_mean_reversion(input, results)
     months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     pos = 15*24:30*24:365*24
 
-    fig = plot(layout=(2, 1), link=:both, xticks=(pos, months), ylims=(2, 5), xlims=(1, 365*24))
+    fig = plot(layout=(2, 1), link=:both, ylims=(3, 5), xticks=(pos, months), xlims=(1, 365*24))
     plot!(input, lw=0.5, label="", subplot=1)
     plot!(results.mean, label="", lw=0.5, subplot=2)
 
@@ -105,7 +105,7 @@ end
 
 epex_price = readdlm("epexprice.txt")
 results = detrend(log.(epex_price))
-f1 = plot_stats(epex_price, results)
+f1 = plot_mean_reversion(log.(epex_price), results)
 f2 = plot_mean_reversion_decomposition(results)
 writedlm("logmeanreversion.txt", results.mean)
 
